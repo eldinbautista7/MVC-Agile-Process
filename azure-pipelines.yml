@@ -1,42 +1,79 @@
 trigger:
   - main
 
-pool:
-  name: MyLocalPool
+stages:
+  - stage: Build
+    displayName: 'CI - Build and Publish'
+    jobs:
+      - job: BuildJob
+        pool:
+          name: MyLocalPool
+        steps:
+          - task: UseDotNet@2
+            displayName: 'Use .NET 8'
+            inputs:
+              packageType: 'sdk'
+              version: '8.x'
 
-variables:
-  buildConfiguration: 'Release'
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore'
+            inputs:
+              command: 'restore'
+              projects: '**/*.csproj'
 
-steps:
-  - task: UseDotNet@2
-    displayName: 'Use .NET 8'
-    inputs:
-      packageType: 'sdk'
-      version: '8.x'
+          - task: DotNetCoreCLI@2
+            displayName: 'Build'
+            inputs:
+              command: 'build'
+              projects: '**/*.csproj'
+              arguments: '--configuration Release'
 
-  - task: DotNetCoreCLI@2
-    displayName: 'Restore'
-    inputs:
-      command: 'restore'
-      projects: '**/*.csproj'
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish'
+            inputs:
+              command: 'publish'
+              publishWebProjects: true
+              arguments: '--configuration Release --output $(Build.ArtifactStagingDirectory)'
+              zipAfterPublish: true
 
-  - task: DotNetCoreCLI@2
-    displayName: 'Build'
-    inputs:
-      command: 'build'
-      projects: '**/*.csproj'
-      arguments: '--configuration $(buildConfiguration)'
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Artifact'
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'WebAppDrop'
 
-  - task: DotNetCoreCLI@2
-    displayName: 'Publish'
-    inputs:
-      command: 'publish'
-      publishWebProjects: true
-      arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)'
-      zipAfterPublish: true
+  - stage: Deploy
+    displayName: 'CD - Deploy to Local'
+    dependsOn: Build
+    jobs:
+      - deployment: DeployWeb
+        displayName: 'Deploy to LocalEnvironment'
+        environment:
+          name: LocalEnvironment
+          resourceType: VirtualMachine
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: UseDotNet@2
+                  displayName: 'Use .NET 8'
+                  inputs:
+                    packageType: 'sdk'
+                    version: '8.x'
 
-  - task: PublishBuildArtifacts@1
-    displayName: 'Publish Artifact'
-    inputs:
-      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
-      ArtifactName: 'WebAppDrop'
+                - script: |
+                    echo "Deploying MVC Agile Process App"
+                    mkdir -p "C:\deploy\MVCAgileProcess"
+                    xcopy /E /Y "$(Pipeline.Workspace)\WebAppDrop\*" "C:\deploy\MVCAgileProcess\"
+                  displayName: 'Copy files to deploy folder'
+
+                - script: |
+                    cd "C:\deploy\MVCAgileProcess"
+                    for /r . %%f in (*.zip) do (
+                      powershell -command "Expand-Archive -Force '%%f' 'C:\deploy\MVCAgileProcess\app'"
+                    )
+                  displayName: 'Unzip published app'
+
+                - script: |
+                    start cmd /k "cd C:\deploy\MVCAgileProcess\app && dotnet MVC_Agile_Process.dll --urls http://localhost:5000"
+                  displayName: 'Run the application'
